@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bassgen</title>
+<style>
+:root{--bg:#1f1830;--panel:#2a2140;--line:#3a2f57;--text:#f1ebfa;--muted:#a99cc4;--accent:#ff9f45;
+  font-family:Bahnschrift,"Segoe UI",system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-size:15px;line-height:1.45}
+main{display:grid;grid-template-columns:300px 1fr;min-height:100vh}
+aside{background:var(--panel);padding:24px 20px;display:flex;flex-direction:column;gap:14px;border-right:1px solid var(--line)}
+h1{margin:0;font-size:26px;font-weight:600}
+label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:13px}
+label.chk{flex-direction:row;align-items:center;gap:8px}
+input,select,textarea{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font:inherit;width:100%}
+input[type=checkbox]{width:auto}
+input[type=file]{padding:6px;font-size:13px}
+textarea{resize:vertical}
+textarea:disabled{opacity:.45}
+.hint{margin:-6px 0 0;color:var(--muted);font-size:12.5px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.seed{display:flex;gap:6px}
+button,.dl{font:inherit;font-size:14px;cursor:pointer;border-radius:6px;padding:7px 14px;border:1px solid var(--line);background:transparent;color:var(--text);text-decoration:none}
+button:hover,.dl:hover{border-color:var(--muted)}
+#go{background:var(--accent);border-color:var(--accent);color:#2b1a05;font-weight:600;padding:11px}
+#go:disabled{opacity:.6}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#err{color:#ff8a8a;margin:0;min-height:1.2em;font-size:14px}
+section{padding:24px 28px;min-width:0}
+.sum{margin:0 0 16px;color:var(--muted)}
+.sum i{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 12px}
+.empty{color:var(--muted);max-width:42ch}
+article{padding:14px 0;border-top:1px solid var(--line)}
+article header{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+article header span{color:var(--muted);font-size:13px}
+.sp{flex:1}
+.roll{position:relative}
+canvas{display:block;width:100%}
+.ph{position:absolute;top:0;bottom:0;left:0;width:2px;background:#fff;opacity:0;pointer-events:none}
+@media(max-width:820px){main{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid var(--line)}section{padding:18px 16px}}
+</style>
+</head>
+<body>
+<main>
+<aside>
+  <h1>bassgen</h1>
+  <label>Akorlar
+    <textarea id="chords" rows="3">Am F C G</textarea>
+  </label>
+  <p class="hint">Her akor 1 bar sürer. Süre için :2 ekle (Dm:2). Örnek: Am F7 C Gsus</p>
+  <label>veya akor MIDI dosyası
+    <input type="file" id="midi" accept=".mid,.midi">
+  </label>
+  <button type="button" id="clear" hidden>MIDI dosyasını kaldır</button>
+  <div class="two">
+    <label>BPM <input id="bpm" type="number" min="40" max="300" placeholder="otomatik"></label>
+    <label>Bar sayısı <input id="bars" type="number" min="1" max="64" placeholder="akora göre"></label>
+  </div>
+  <div class="two">
+    <label>Varyant sayısı <input id="n" type="number" min="1" max="32" value="8"></label>
+    <label>Seed <span class="seed"><input id="seed" type="number" value="42"><button type="button" id="dice" title="Yeni seed">Yeni</button></span></label>
+  </div>
+  <label>Stil <select id="style"></select></label>
+  <label>Ritim şablonu <select id="tpl"><option value="">Otomatik</option></select></label>
+  <label class="chk"><input type="checkbox" id="pad" checked> Akorları da çal</label>
+  <label class="chk"><input type="checkbox" id="loop" checked> Döngüde çal</label>
+  <button id="go">Bassline üret</button>
+  <p id="err" role="alert"></p>
+</aside>
+<section id="out"><p class="empty">Akorları yaz ya da bir MIDI dosyası seç, sonra Bassline üret'e bas. Her varyantı dinleyebilir, beğendiğini MIDI olarak indirebilirsin.</p></section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const COL = {root:'#ff9f45', fifth:'#4fd1c5', octave:'#c3a1ff', approach:'#ffd166', tension:'#ff6b8b'};
+const RL = {root:'kök', fifth:'beşli', octave:'oktav', approach:'yaklaşma', tension:'gerilim'};
+let STYLES = [];
+let midiB64 = null, data = null, ctx = null, cur = null, redraws = [];
+
+function fillTpl() {
+  const s = STYLES.find(x => x.id === $('#style').value);
+  $('#tpl').innerHTML = '<option value="">Otomatik</option>' + s.templates.map(t => `<option>${t}</option>`).join('');
+}
+fetch('/api/meta').then(r => r.json()).then(m => {
+  STYLES = m.styles;
+  $('#style').innerHTML = STYLES.map(s => `<option value="${s.id}">${s.label}</option>`).join('');
+  fillTpl();
+});
+$('#style').onchange = fillTpl;
+
+$('#midi').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { midiB64 = r.result.split(',')[1]; $('#chords').disabled = true; $('#clear').hidden = false; };
+  r.readAsDataURL(f);
+};
+$('#clear').onclick = () => { midiB64 = null; $('#midi').value = ''; $('#chords').disabled = false; $('#clear').hidden = true; };
+$('#dice').onclick = () => { $('#seed').value = Math.floor(Math.random() * 100000); };
+
+$('#go').onclick = async () => {
+  stop(); $('#err').textContent = ''; $('#go').disabled = true;
+  const body = {chords: $('#chords').value, midi_b64: midiB64, bpm: $('#bpm').value, bars: $('#bars').value,
+                n: $('#n').value, seed: $('#seed').value, style: $('#style').value, template: $('#tpl').value};
+  try {
+    const r = await fetch('/api/generate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    render(d);
+  } catch (e) { $('#err').textContent = e.message; }
+  $('#go').disabled = false;
+};
+
+function render(d) {
+  data = d; redraws = [];
+  const out = $('#out');
+  const used = new Set(d.variants.flatMap(v => v.notes.map(n => n.role)));
+  const legend = Object.keys(COL).filter(r => used.has(r)).map(r => `<i style="background:${COL[r]}"></i>${RL[r]}`).join(' ');
+  out.innerHTML = `<p class="sum">${d.style}, ${d.bars} bar, ${d.bpm} BPM, ${d.chords.map(c => c.label).join(' ')} ${legend}</p>`;
+  d.variants.forEach((v, i) => {
+    const name = `bass_${String(i + 1).padStart(2, '0')}_${v.template}.mid`;
+    const url = URL.createObjectURL(new Blob([Uint8Array.from(atob(v.midi_b64), c => c.charCodeAt(0))], {type:'audio/midi'}));
+    const el = document.createElement('article');
+    el.innerHTML = `<header><b>#${i + 1}</b><span>${v.template}</span><span class="sp"></span>
+      <button class="play">Çal</button><a class="dl" href="${url}" download="${name}" draggable="true">MIDI indir</a></header>
+      <div class="roll"><canvas></canvas><i class="ph"></i></div>`;
+    out.appendChild(el);
+    const cv = el.querySelector('canvas'), btn = el.querySelector('.play'), ph = el.querySelector('.ph');
+    btn.onclick = () => play(v, btn, ph);
+    el.querySelector('.dl').ondragstart = e => e.dataTransfer.setData('DownloadURL', `audio/midi:${name}:${url}`);
+    const fn = () => draw(cv, v); fn(); redraws.push(fn);
+  });
+}
+addEventListener('resize', () => redraws.forEach(f => f()));
+
+function draw(cv, v) {
+  const w = cv.parentElement.clientWidth, h = 96, dpr = devicePixelRatio || 1;
+  cv.width = w * dpr; cv.height = h * dpr; cv.style.height = h + 'px';
+  const g = cv.getContext('2d'); g.scale(dpr, dpr);
+  const total = data.bars * 16, ps = v.notes.map(n => n.pitch);
+  let lo = Math.min(...ps) - 1, hi = Math.max(...ps) + 1;
+  if (hi - lo < 12) { lo = Math.floor((hi + lo) / 2 - 6); hi = lo + 12; }
+  const top = 18, ph = h - top - 2, sw = w / total, rh = ph / (hi - lo + 1);
+  for (let s = 0; s <= total; s += 4) { g.fillStyle = s % 16 ? '#2f2548' : '#5a4b80'; g.fillRect(Math.round(s * sw), top, 1, ph); }
+  g.font = '12px Bahnschrift, "Segoe UI", system-ui, sans-serif'; g.fillStyle = '#a99cc4';
+  data.chords.forEach(c => g.fillText(c.label, c.start * sw + 4, 13));
+  v.notes.forEach(n => {
+    g.globalAlpha = .55 + .45 * n.velocity / 127; g.fillStyle = COL[n.role] || COL.root;
+    g.fillRect(n.step * sw + 1, top + (hi - n.pitch) * rh, Math.max(2, n.length * sw - 2), Math.max(3, rh - 1));
+  });
+  g.globalAlpha = 1;
+}
+
+function stop() {
+  if (!cur) return;
+  clearTimeout(cur.t); cancelAnimationFrame(cur.raf);
+  cur.master.gain.setTargetAtTime(0, ctx.currentTime, .02);
+  setTimeout(m => m.disconnect(), 300, cur.master);
+  cur.btn.textContent = 'Çal'; cur.ph.style.opacity = 0; cur = null;
+}
+
+function play(v, btn, ph) {
+  const same = cur && cur.v === v; stop(); if (same) return;
+  ctx = ctx || new AudioContext(); ctx.resume();
+  const sd = 60 / data.bpm / 4, dur = data.bars * 16 * sd, reps = $('#loop').checked ? 16 : 1;
+  const master = ctx.createGain(); master.gain.value = .5; master.connect(ctx.destination);
+  const t0 = ctx.currentTime + .05;
+  const tone = (m, start, len, vel, type, gain) => {
+    const o = ctx.createOscillator(), e = ctx.createGain(); o.type = type;
+    o.frequency.value = 440 * 2 ** ((m - 69) / 12);
+    const a = gain * vel / 127;
+    e.gain.setValueAtTime(0, start); e.gain.linearRampToValueAtTime(a, start + .01);
+    e.gain.setValueAtTime(a, start + Math.max(.02, len - .04)); e.gain.linearRampToValueAtTime(0, start + len);
+    o.connect(e); e.connect(master); o.start(start); o.stop(start + len + .02);
+  };
+  for (let k = 0; k < reps; k++) {
+    const base = t0 + k * dur;
+    v.notes.forEach(n => {  // sine for the sub, quiet triangle so it's audible on small speakers
+      const len = Math.max(.06, n.length * sd);
+      tone(n.pitch, base + n.step * sd, len, n.velocity, 'sine', .8);
+      tone(n.pitch, base + n.step * sd, len, n.velocity, 'triangle', .2);
+    });
+    if ($('#pad').checked) data.chords.forEach(c => c.pcs.forEach(pc =>
+      tone(60 + pc, base + c.start * sd, (c.end - c.start) * sd, 60, 'triangle', .1)));
+  }
+  cur = {v, btn, ph, master, t: setTimeout(stop, reps * dur * 1000 + 300), raf: 0};
+  btn.textContent = 'Durdur';
+  const start = performance.now();
+  const tick = () => { ph.style.opacity = 1; ph.style.left = (((performance.now() - start) / 1000) % dur / dur * 100) + '%'; cur.raf = requestAnimationFrame(tick); };
+  tick();
+}
+</script>
+</body>
+</html>
