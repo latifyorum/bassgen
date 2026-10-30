@@ -16,7 +16,7 @@ English: [README.md](README.md)
 ## Hızlı başlangıç
 
 ```bash
-git clone https://github.com/<kullanici-adin>/bassgen.git
+git clone https://github.com/latifyorum/bassgen.git
 cd bassgen
 pip install -e .
 
